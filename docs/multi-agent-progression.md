@@ -138,7 +138,7 @@ All of these are now part of the Crysknife design (see `crysknife-design.md`):
 
 What we added that Gas Town doesn't have:
 - **preToolUse area enforcement** — hard block on writes outside assigned area
-- **kiro-cli native integration** — agent configs, hooks, MCP instead of fighting the tool
+- **kiro-cli native integration** — agent configs, hooks, preToolUse guards instead of fighting the tool
 - **Traceability** — acceptance criteria chain that Gas Town explicitly skips
 
 ---
@@ -504,25 +504,26 @@ Crysknife automates the pain points from Stage 6 and scales from 6 to ~15 agents
 ```
 STAGE 6 PAIN POINT                    CRYSKNIFE SOLUTION
 ────────────────────────────────────   ────────────────────────────────
-You dispatch work manually             crys sling + @crysknife/sling MCP
+You dispatch work manually             crys sling (mayor runs via execute_bash)
 You don't notice idle agents           crys watch (heartbeat + pane diffing)
 You merge branches in lazygit          Merger agent with staging branch
 Agents share one working directory     Git worktrees per worker
 You track status in your head          .crysknife/state.json + crys status
 You are mayor + monitor + merger       Three roles: mayor, workers, merger
-Agents ignore their assignment         Agent configs with hooks + MCP
+Agents ignore their assignment         Agent configs with hooks
 Agents write outside their area        preToolUse hook blocks writes
+Agents run dangerous commands          preToolUse hook guards execute_bash
 ```
 
 ### How It Works (Summary)
 
-Three roles: mayor (plans/dispatches), workers (code on isolated branches), merger (merges to main via staging). Communication flows through shared files and MCP tool calls, not direct messaging.
+Three roles: mayor (plans/dispatches), workers (code on isolated branches), merger (merges to main via staging). Communication flows through shared files and `crys` CLI commands (via `execute_bash`), not direct messaging.
 
-kiro-cli native integration: agent configs define prompt, tools, context, hooks, and MCP server per role. `agentSpawn` hook loads task on startup. `preToolUse` hook enforces area boundaries. `stop` hook updates heartbeat. `crys mcp-serve` exposes role-filtered `@crysknife/*` tools.
+kiro-cli native integration: agent configs define prompt, tools, context, and hooks per role. `agentSpawn` hook loads task on startup. `preToolUse` hooks enforce area boundaries and block dangerous commands. `stop` hook updates heartbeat. Agents run `crys` CLI commands for state interaction.
 
 Adaptive planning: the mayor maintains a living plan.md with tasks grouped by readiness (ready/blocked/discovered/done). No rigid phases.
 
-See `crysknife-design.md` for: agent config examples, hook scripts, MCP tool definitions, CLI command details, templates, state file format, architecture diagrams, and implementation phases.
+See `crysknife-design.md` for: agent config examples, hook scripts, CLI command details, templates, state file format, architecture diagrams, and implementation phases.
 
 ### Scaling Limits and Breaking Points
 
@@ -598,7 +599,7 @@ Week 2-3         Stage 6.5: solidify conventions.
                    Add principles.md, agents.md, work-queue.md.
 Month 1-2        Stage 7: Build Crysknife (6 agents).
                    Phase 1: Foundation (init, start, stop, status, configs)
-                   Phase 2: Work + MCP (sling, queue, mcp-serve, hooks)
+                   Phase 2: Work (sling, queue, hooks)
                    Phase 3: Monitoring (watch, nudge, auto-restart)
                    Phase 4: Planning (convoy, dashboard)
 Month 2-3        Scale to 8-10 agents.
@@ -630,6 +631,6 @@ Eventually       Try Gas Town, or keep evolving Crysknife.
 
 8. **Guard against heresies.** Multiple agents will propagate wrong assumptions through the codebase. A shared principles file with explicit anti-patterns is the cheapest defense. preToolUse hooks are the hard enforcement. Review sweeps are the third line.
 
-9. **Work with the tool, not against it.** Use kiro-cli's native features (agent configs, hooks, MCP, context) instead of fighting it with tmux send-keys. The less you have to work around the tool, the more reliable the system.
+9. **Work with the tool, not against it.** Use kiro-cli's native features (agent configs, hooks, context) instead of fighting it with tmux send-keys. The less you have to work around the tool, the more reliable the system.
 
 10. **Scale by upgrading, not redesigning.** Crysknife's architecture handles 6 agents out of the box. Each scaling tier (8-10, 10-12, 12-15) requires a specific upgrade. Know what breaks next and fix it when it hurts, not before.

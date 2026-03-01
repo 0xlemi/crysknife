@@ -30,13 +30,13 @@ Crysknife does not aim to replace Gas Town. It implements a subset of Gas Town's
 
 9. **Git worktrees for isolation.** Each worker and the merger operate in their own Git worktree. Workers never share a working directory. The merger works in the main worktree. `crys start` creates worktrees automatically via `git worktree add`. Shared directories (`.crysknife/`, `.kiro/specs/`) are symlinked back to the main worktree so all agents read/write the same state and task files.
 
-10. **Only `crys` CLI writes state.json.** Agents never modify state.json directly — this avoids concurrent write corruption. Agents interact with state through the Crysknife MCP server (`@crysknife` tools), which routes through the `crys` binary. State transitions happen through MCP tool calls (e.g. `@crysknife/done`) or `crys` CLI commands.
+10. **Only `crys` CLI writes state.json.** Agents never modify state.json directly — this avoids concurrent write corruption. Agents run `crys` CLI commands via `execute_bash` (e.g. `crys done worker-1`), which routes through the `crys` binary. A `preToolUse` hook on `execute_bash` blocks dangerous commands.
 
 11. **Staging branch for safe merges.** The merger never merges directly to main. It merges to `merge/staging` first, runs tests there, and only fast-forwards main if tests pass. If tests fail, main stays clean and the merger flags the issue.
 
 12. **`crys watch` nudges the mayor.** When `crys watch` detects a worker has gone idle or completed a task, it nudges the mayor agent (not just the worker) so the mayor can reassign work without you having to notice and intervene manually.
 
-13. **kiro-cli native integration.** Crysknife uses kiro-cli's agent configs, hooks, MCP server protocol, and context system rather than fighting the tool with tmux send-keys. Hooks provide GUPP (agents auto-load their assignment on startup). MCP provides structured tool calls (agents call `@crysknife/done` instead of shelling out). Context resources auto-load spec files. preToolUse hooks enforce area boundaries at the tool level.
+13. **kiro-cli native integration.** Crysknife uses kiro-cli's agent configs, hooks, and context system rather than fighting the tool with tmux send-keys. Hooks provide GUPP (agents auto-load their assignment on startup). Agents run `crys` CLI commands via `execute_bash` for state interaction. Context resources auto-load spec files. preToolUse hooks enforce area boundaries and block dangerous commands.
 
 ---
 
@@ -118,30 +118,81 @@ The merger gets a permanent task file that persists across sessions:
 ## Standing Orders
 
 You are the Merger. Your job is to merge completed worker branches
-to main, one at a time, in the correct order.
+to main, one at a time, through the staging branch.
 
-## Process
-1. Check .crysknife/state.json for agents with status "done"
-2. Pick the branch least likely to conflict (smallest diff first)
-3. Checkout main, pull latest
-4. Merge the branch (or rebase if cleaner)
-5. If conflicts:
-   - Resolve them using design.md and principles.md as reference
-   - Document what you changed in the merge report
-6. Run tests after merge
-7. If tests pass: push to main, update state.json
-8. If tests fail: document the failure, flag for mayor
-9. Write merge report below
-10. Move to next completed branch
+## Merge Runbook
+
+For each branch in the merge queue:
+
+### 1. Check what's ready
+  crys status
+Look for workers with status "done". Pick the branch with the smallest diff:
+  git diff main...<branch> --stat
+
+### 2. Prepare staging
+  git checkout merge/staging
+  git reset --hard main
+
+### 3. Merge the branch
+  git merge <branch> --no-edit
+
+If conflicts appear, go to "Conflict Resolution" below.
+
+### 4. Run tests
+  go test ./...
+(or whatever the project's test command is)
+
+### 5a. Tests pass — land it
+  git checkout main
+  git merge merge/staging --ff-only
+  crys merge-done <branch>
+Write a merge report below, then go back to step 1.
+
+### 5b. Tests fail — diagnose
+Read the test output carefully.
+- If the failure is caused by the merge (missing import, wrong function
+  signature after conflict resolution), fix it on staging and re-run tests.
+- If the failure is a pre-existing issue or something you can't fix,
+  do NOT touch main. Instead:
+  crys merge-done <branch> --failed "tests failed: <one-line summary>"
+Write what happened in the merge report and move to the next branch.
+
+## Conflict Resolution
+
+When `git merge` reports conflicts:
+1. Run `git diff` to see all conflicting files
+2. For each conflict:
+   - Read both sides of the conflict
+   - Check design.md for the intended architecture/patterns
+   - Check principles.md for guardrails
+   - Pick the approach that matches the design, or combine both if they
+     touch different parts of the same file
+3. If a conflict involves two workers changing the same logic differently
+   and you can't tell which is correct from the docs:
+   - Pick the simpler approach
+   - Write in Feedback: "conflict in <file>, resolved by keeping <worker>'s
+     approach. Mayor please verify."
+4. After resolving all conflicts:
+   git add .
+   git commit --no-edit
+   Continue to step 4 (run tests).
 
 ## Rules
 - NEVER merge two branches at the same time
 - ALWAYS run tests after each merge
-- If a conflict is too complex, flag it — don't guess
+- NEVER push directly to main — always go through merge/staging
+- If a conflict is too complex or ambiguous, flag it — don't guess
 - Read design.md and principles.md to resolve conflicts correctly
+- If design.md contradicts the code, flag it in Feedback for the mayor
 
 ## Merge Reports
-(merger writes here after each merge)
+(write one entry per merge, most recent first)
+
+### <branch> — <date>
+- Files changed: <count>
+- Conflicts: none / resolved <list>
+- Tests: pass / fail (<summary>)
+- Notes: <anything the mayor should know>
 ```
 
 ---
@@ -314,9 +365,9 @@ Alternative: a single worker.json with an `agentSpawn` hook that dynamically loa
   "prompt": "file://.crysknife/templates/mayor.md",
   "tools": [
     "fs_read", "fs_write", "execute_bash",
-    "grep", "glob", "@crysknife"
+    "grep", "glob"
   ],
-  "allowedTools": ["fs_read", "grep", "glob", "@crysknife"],
+  "allowedTools": ["fs_read", "grep", "glob"],
   "resources": [
     "file://.kiro/specs/plan.md",
     "file://.kiro/specs/design.md",
@@ -329,16 +380,15 @@ Alternative: a single worker.json with an `agentSpawn` hook that dynamically loa
       "command": "crys status --json",
       "description": "Load current agent status into context on startup"
     }],
+    "preToolUse": [{
+      "matcher": "execute_bash",
+      "command": ".crysknife/hooks/enforce-commands.sh mayor",
+      "description": "Block dangerous shell commands"
+    }],
     "stop": [{
       "command": "crys heartbeat mayor",
       "description": "Update last_activity timestamp after each response"
     }]
-  },
-  "mcpServers": {
-    "crysknife": {
-      "command": "crys",
-      "args": ["mcp-serve", "--role", "mayor"]
-    }
   },
   "keyboardShortcut": "ctrl+shift+m",
   "welcomeMessage": "Mayor online. What are we building?"
@@ -354,9 +404,9 @@ Alternative: a single worker.json with an `agentSpawn` hook that dynamically loa
   "prompt": "file://.crysknife/templates/worker-prompt.md",
   "tools": [
     "fs_read", "fs_write", "execute_bash",
-    "grep", "glob", "code", "@crysknife"
+    "grep", "glob", "code"
   ],
-  "allowedTools": ["fs_read", "grep", "glob", "code", "@crysknife"],
+  "allowedTools": ["fs_read", "grep", "glob", "code"],
   "toolsSettings": {
     "fs_write": {
       "allowedPaths": ["src/auth/**"],
@@ -377,17 +427,15 @@ Alternative: a single worker.json with an `agentSpawn` hook that dynamically loa
       "matcher": "fs_write",
       "command": ".crysknife/hooks/enforce-area.sh worker-1",
       "description": "Block writes outside assigned area"
+    }, {
+      "matcher": "execute_bash",
+      "command": ".crysknife/hooks/enforce-commands.sh worker-1",
+      "description": "Block dangerous shell commands"
     }],
     "stop": [{
       "command": "crys heartbeat worker-1",
       "description": "Update last_activity timestamp"
     }]
-  },
-  "mcpServers": {
-    "crysknife": {
-      "command": "crys",
-      "args": ["mcp-serve", "--role", "worker", "--id", "worker-1"]
-    }
   }
 }
 ```
@@ -401,9 +449,9 @@ Alternative: a single worker.json with an `agentSpawn` hook that dynamically loa
   "prompt": "file://.crysknife/templates/merger-prompt.md",
   "tools": [
     "fs_read", "fs_write", "execute_bash",
-    "grep", "glob", "@crysknife"
+    "grep", "glob"
   ],
-  "allowedTools": ["fs_read", "grep", "glob", "@crysknife"],
+  "allowedTools": ["fs_read", "grep", "glob"],
   "resources": [
     "file://.kiro/specs/design.md",
     "file://.kiro/specs/principles.md",
@@ -414,16 +462,15 @@ Alternative: a single worker.json with an `agentSpawn` hook that dynamically loa
       "command": "crys merge-queue --json",
       "description": "Load pending merge queue into context"
     }],
+    "preToolUse": [{
+      "matcher": "execute_bash",
+      "command": ".crysknife/hooks/enforce-commands.sh merger",
+      "description": "Block dangerous shell commands (allows git merge/rebase)"
+    }],
     "stop": [{
       "command": "crys heartbeat merger",
       "description": "Update last_activity timestamp"
     }]
-  },
-  "mcpServers": {
-    "crysknife": {
-      "command": "crys",
-      "args": ["mcp-serve", "--role", "merger"]
-    }
   }
 }
 ```
@@ -443,9 +490,12 @@ agentSpawn           Session starts             Load state.json + task file
 userPromptSubmit     Every user message         (not used currently — could
                                                 inject fresh state if needed)
 
-preToolUse           Before any tool runs       ENFORCE AREA BOUNDARIES.
-                                                Block fs_write outside the
-                                                worker's assigned area.
+preToolUse           Before any tool runs       TWO GUARDS:
+                                                1. fs_write → enforce-area.sh
+                                                   Block writes outside area.
+                                                2. execute_bash → enforce-commands.sh
+                                                   Block dangerous commands
+                                                   (rm -rf, git push --force, etc.)
                                                 Exit code 2 = blocked,
                                                 STDERR returned to agent.
 
@@ -496,44 +546,70 @@ case "$FILE_PATH" in
 esac
 ```
 
-### MCP Server — Native Tool Calls
+### Command Guard — Safe Bash Execution
 
-Crysknife exposes an MCP server so agents can interact with the orchestrator through native tool calls instead of shelling out. `crys mcp-serve` speaks the MCP stdio protocol.
+Workers and the merger have access to `execute_bash` for running tests, builds, and `crys` commands. But they could also run destructive commands (`rm -rf`, `git push --force`, `git checkout main`). The command guard hook blocks dangerous commands before they execute.
 
-Each agent config includes the MCP server with its role and identity:
+`.crysknife/hooks/enforce-commands.sh` — whitelist-based command filtering:
 
-```json
-"mcpServers": {
-  "crysknife": {
-    "command": "crys",
-    "args": ["mcp-serve", "--role", "worker", "--id", "worker-1"]
-  }
-}
+```bash
+#!/bin/bash
+# Usage: enforce-commands.sh <agent-id>
+# Receives hook event JSON on stdin, blocks dangerous bash commands
+
+AGENT_ID="$1"
+EVENT=$(cat)
+
+COMMAND=$(echo "$EVENT" | jq -r '.tool_input.command // empty')
+
+if [ -z "$COMMAND" ]; then
+  exit 0
+fi
+
+# Block list — destructive or out-of-scope commands
+BLOCKED_PATTERNS=(
+  "rm -rf"
+  "git push.*--force"
+  "git push.*-f"
+  "git checkout main"
+  "git checkout master"
+  "git merge"
+  "git rebase"
+  "git reset --hard"
+  "git branch -[dD]"
+  "chmod"
+  "chown"
+  "sudo"
+  "curl.*|.*sh"
+  "wget.*|.*sh"
+  "npm publish"
+  "go install"
+)
+
+for pattern in "${BLOCKED_PATTERNS[@]}"; do
+  if echo "$COMMAND" | grep -qE "$pattern"; then
+    echo "BLOCKED: '$COMMAND' matches blocked pattern '$pattern'. If you need this, write it in your Feedback section for the mayor." >&2
+    exit 2
+  fi
+done
+
+exit 0
 ```
 
-#### MCP Tools by Role
+The mayor gets a shorter block list (no git restrictions — it may need to inspect branches). The merger gets git merge/rebase allowed but push --force blocked. Each role gets its own variant, or the script reads the role from state.json and adjusts.
 
-```
-TOOL                    MAYOR   WORKER   MERGER   DESCRIPTION
-────────────────────    ─────   ──────   ──────   ──────────────────────────
-@crysknife/status       yes     yes      yes      Read current state.json
-@crysknife/done         no      yes      no       Mark self as done, notify
-                                                   mayor + merger
-@crysknife/feedback     no      yes      yes      Write feedback to own
-                                                   task file's Feedback section
-@crysknife/sling        yes     no       no       Assign work to a worker
-                                                   (generates task file, updates
-                                                   state, nudges worker)
-@crysknife/queue        yes     no       no       Add/remove tasks from queue
-@crysknife/merge-queue  no      no       yes      Read pending merge queue
-@crysknife/merge-done   no      no       yes      Mark a merge as complete,
-                                                   update state
-@crysknife/nudge        yes     no       no       Nudge a stuck agent
-```
+### MCP Server — Deferred
 
-Role-based filtering: the `--role` flag determines which tools are exposed. Workers can't sling work. The mayor can't mark merges done. This prevents agents from stepping outside their role.
+The design originally included a `crys mcp-serve` MCP server so agents would call `@crysknife/done` as native tool calls with role-based filtering. This is deferred.
 
-All MCP tools route through the `crys` binary, which is the sole writer of state.json. This preserves design decision #10 — agents interact with state through Crysknife, never directly.
+Agents instead use `execute_bash` to run `crys` CLI commands directly:
+- Workers run: `crys done worker-1`, `crys status`
+- Mayor runs: `crys sling worker-1 ...`, `crys status`, `crys queue ...`
+- Merger runs: `crys status`, `crys merge-done ...`
+
+The `execute_bash` approach is simpler (no protocol handler, no per-agent processes), more reliable (execute_bash is battle-tested), and sufficient at 6 agents. Role enforcement comes from prompts + the command guard hook. The preToolUse hook on execute_bash blocks destructive commands regardless of role.
+
+If agents routinely call commands outside their role and it causes problems, add the MCP server then. In practice, well-prompted agents stay in their lane.
 
 ### Context Resources — Auto-Loaded Specs
 
@@ -568,7 +644,6 @@ SESSION STARTUP (what happens when crys start launches a worker):
   3. kiro-cli loads worker-1.json:
      - System prompt from .crysknife/templates/worker-prompt.md
      - Context: design.md, principles.md, tasks/worker-1.md
-     - MCP server: crys mcp-serve --role worker --id worker-1
      - Hooks registered
 
   4. agentSpawn hook fires:
@@ -592,8 +667,7 @@ DURING WORK:
 
 TASK COMPLETE:
 
-  8. Agent calls @crysknife/done
-     - MCP tool routes to: crys done worker-1
+  8. Agent runs: crys done worker-1 (via execute_bash)
      - state.json updated (status → "done")
      - Branch added to merge queue
      - Mayor nudged: "worker-1 finished, check plan.md"
@@ -691,18 +765,18 @@ WHO WRITES WHAT:
 
 ### Done Detection
 
-When a worker finishes a task, it calls the `@crysknife/done` MCP tool. This routes to `crys done <worker-id>`, which:
+When a worker finishes a task, it runs `crys done <worker-id>` via `execute_bash`, which:
 
 1. Updates state.json (worker status -> "done", branch -> ready for merge)
 2. Adds the branch to the merge queue
 3. Nudges the mayor: "worker-1 finished task X. Check plan.md for next assignment."
 4. Nudges the merger: "New branch in merge queue."
 
-Workers are prompted in their task file template to call this tool when done:
+Workers are prompted in their task file template to run this command when done:
 
 ```markdown
 ## When Done
-Call the @crysknife/done tool to notify the mayor and merger automatically.
+Run: crys done {{AGENT_ID}}
 ```
 
 If a worker forgets, `crys watch` detects idle state (no heartbeat updates) and runs the done flow automatically.
@@ -777,7 +851,8 @@ If a worker forgets, `crys watch` detects idle state (no heartbeat updates) and 
 │  .crysknife/                                             │
 │  ├── state.json           (orchestrator state)           │
 │  ├── hooks/               (preToolUse scripts)           │
-│  │   └── enforce-area.sh                                 │
+│  │   ├── enforce-area.sh                                 │
+│  │   └── enforce-commands.sh                             │
 │  └── templates/           (workflow tier templates)      │
 │      ├── full.md                                         │
 │      ├── standard.md                                     │
@@ -855,7 +930,8 @@ Creates:
   .crysknife/
   ├── state.json
   ├── hooks/
-  │   └── enforce-area.sh      (preToolUse area boundary script)
+  │   ├── enforce-area.sh      (preToolUse area boundary script)
+  │   └── enforce-commands.sh  (preToolUse command guard script)
   └── templates/
       ├── mayor.md
       ├── worker-prompt.md
@@ -927,7 +1003,7 @@ $ crys status
 
 ### `crys sling <agent>`
 
-Assign work to an agent. Can be called by you from the terminal or by the mayor via the `@crysknife/sling` MCP tool.
+Assign work to an agent. Can be called by you from the terminal or by the mayor via `execute_bash`.
 
 ```
 $ crys sling worker-1 --task "Add auth endpoint" --tier full --branch feat/a1-auth --area "src/auth/"
@@ -991,7 +1067,7 @@ Sends a tmux `send-keys` message to the agent's pane telling it to check its tas
 
 ### `crys done <worker>`
 
-Mark a worker as done. Called by the worker via the `@crysknife/done` MCP tool, or manually by you from the terminal.
+Mark a worker as done. Called by the worker via `execute_bash`, or manually by you from the terminal.
 
 ```
 $ crys done worker-1
@@ -1003,7 +1079,7 @@ Steps:
 3. Nudges the mayor: "worker-1 finished. Check plan.md for next assignment."
 4. Nudges the merger: "New branch ready in merge queue."
 
-Workers call this through the MCP tool (`@crysknife/done`) as part of their normal workflow. If a worker forgets, `crys watch` detects idle state and triggers the done flow automatically.
+Workers run this as part of their normal workflow. If a worker forgets, `crys watch` detects idle state and triggers the done flow automatically.
 
 ### `crys convoy`
 
@@ -1037,20 +1113,6 @@ $ crys my-task worker-1
 # Area: src/auth/
 # Task file: .kiro/specs/tasks/worker-1.md
 ```
-
-### `crys mcp-serve`
-
-Run the Crysknife MCP server over stdio. Not called directly — configured in agent JSON configs as an MCP server entry.
-
-```
-$ crys mcp-serve --role worker --id worker-1
-```
-
-Options:
-- `--role` — agent role (mayor, worker, merger). Determines which MCP tools are exposed.
-- `--id` — agent identity. Used for state.json lookups and ownership checks.
-
-Speaks the MCP stdio protocol (JSON-RPC over stdin/stdout). See "MCP Server — Native Tool Calls" section for available tools per role.
 
 ---
 
@@ -1173,13 +1235,13 @@ You are the Mayor. You plan work, assign tasks to workers, and adapt the plan ba
 - `.crysknife/state.json` — read-only for you. Use `crys status` to check agent state.
 
 ## Your Tools
-- `@crysknife/status` — see which workers are idle, working, or done
-- `@crysknife/sling` — assign work to a worker (task, tier, area, branch)
-- `@crysknife/nudge` — poke a stuck agent
-- `@crysknife/queue` — add/remove tasks from the work queue
+- `crys status` — see which workers are idle, working, or done
+- `crys sling <worker> --task "..." --tier ...` — assign work to a worker
+- `crys nudge <agent>` — poke a stuck agent
+- `crys queue add "..."` — add/remove tasks from the work queue
 
 ## Your Decision Loop
-1. Any workers idle? → Check plan.md "Ready" tasks, pick one, call @crysknife/sling
+1. Any workers idle? → Check plan.md "Ready" tasks, pick one, run `crys sling`
 2. Any workers stuck? → Read their task file Feedback section, help or reassign
 3. Merger flagged issues? → Read tasks/merger.md reports, update design.md if needed
 4. New work discovered? → Add to plan.md "Discovered During Execution"
@@ -1213,7 +1275,7 @@ Workflow tier: full
 - [ ] Write unit tests
 - [ ] Run full test suite, fix any regressions
 - [ ] Write summary of what you did at the top of this file
-- [ ] Call @crysknife/done to notify mayor and merger
+- [ ] Run: crys done {{AGENT_ID}}
 
 ## Rules
 - Follow patterns in design.md
@@ -1221,7 +1283,7 @@ Workflow tier: full
 - Don't touch files outside your area ({{AREA}})
 - Commit to branch {{BRANCH}}
 - If you discover something unexpected, write it under Feedback below
-- When fully done, call @crysknife/done to notify mayor and merger
+- When fully done, run `crys done {{AGENT_ID}}`
 
 ## Feedback
 (write any issues, questions, or discoveries here for the mayor)
@@ -1243,13 +1305,13 @@ Workflow tier: standard
 - [ ] Write unit tests
 - [ ] Run test suite, fix regressions
 - [ ] Write summary of what you did at the top of this file
-- [ ] Call @crysknife/done to notify mayor and merger
+- [ ] Run: crys done {{AGENT_ID}}
 
 ## Rules
 - Follow patterns in design.md
 - Don't touch files outside your area ({{AREA}})
 - Commit to branch {{BRANCH}}
-- When fully done, call @crysknife/done to notify mayor and merger
+- When fully done, run `crys done {{AGENT_ID}}`
 
 ## Feedback
 (write any issues, questions, or discoveries here for the mayor)
@@ -1269,12 +1331,12 @@ Workflow tier: quick
 ## Tasks
 - [ ] Implement {{TASK_NAME}}
 - [ ] Verify it works
-- [ ] Call @crysknife/done to notify mayor and merger
+- [ ] Run: crys done {{AGENT_ID}}
 
 ## Rules
 - Don't touch files outside your area ({{AREA}})
 - Commit to branch {{BRANCH}}
-- When done, call @crysknife/done
+- When done, run `crys done {{AGENT_ID}}`
 ```
 
 ### `.crysknife/templates/principles.md`
@@ -1338,7 +1400,7 @@ Every check interval (default 30s):
 
 Additional signals:
   - Pane process exited (tmux pane_dead flag)  → DEAD
-  - Agent called @crysknife/done               → DONE
+  - Agent ran crys done                        → DONE
 ```
 
 ### Fallback: tmux Pane Content Diffing
@@ -1402,7 +1464,7 @@ crysknife/
 │   ├── convoy.go           # crys convoy
 │   ├── heartbeat.go        # crys heartbeat (called by stop hooks)
 │   ├── mytask.go           # crys my-task (called by agentSpawn hooks)
-│   └── mcpserve.go         # crys mcp-serve (MCP stdio server)
+│   └── mergequeue.go       # crys merge-queue
 ├── internal/
 │   ├── state/
 │   │   └── state.go        # state.json read/write
@@ -1412,10 +1474,8 @@ crysknife/
 │   │   └── monitor.go      # agent detection (heartbeat + pane diffing)
 │   ├── template/
 │   │   └── template.go     # workflow template rendering
-│   ├── agentcfg/
-│   │   └── agentcfg.go     # kiro-cli agent config generation
-│   └── mcp/
-│       └── mcp.go          # MCP server protocol handler
+│   └── agentcfg/
+│       └── agentcfg.go     # kiro-cli agent config generation
 ├── templates/               # default workflow templates
 │   ├── mayor.md
 │   ├── worker-prompt.md     # worker system prompt (shared by all workers)
@@ -1425,7 +1485,8 @@ crysknife/
 │   ├── quick.md
 │   └── principles.md
 ├── hooks/                   # hook scripts (copied to .crysknife/hooks/)
-│   └── enforce-area.sh     # preToolUse: block writes outside area
+│   ├── enforce-area.sh     # preToolUse: block writes outside area
+│   └── enforce-commands.sh # preToolUse: block dangerous bash commands
 ├── go.mod
 ├── go.sum
 └── README.md
@@ -1438,9 +1499,9 @@ crysknife/
 - `os/exec` — tmux command execution
 - `crypto/md5` — pane content hashing (fallback detection)
 - `text/template` — task file and agent config generation
-- `bufio` + `os.Stdin/Stdout` — MCP stdio server
+- `bufio` + `os.Stdin/Stdout` — interactive output
 
-No external dependencies beyond cobra. tmux interaction is all through `os/exec` calling `tmux` commands. MCP server is a simple JSON-RPC over stdio — no framework needed.
+No external dependencies beyond cobra. tmux interaction is all through `os/exec` calling `tmux` commands.
 
 ---
 
@@ -1458,15 +1519,14 @@ No external dependencies beyond cobra. tmux interaction is all through `os/exec`
 - tmux session/pane management
 - Agent config generation (internal/agentcfg)
 
-### Phase 2: Work Assignment + MCP
+### Phase 2: Work Assignment
 
 - `crys sling` — template rendering, task file generation, regenerate worker agent config with new task/area, nudge worker
 - `crys queue` — add/remove/list tasks in state.json
-- `crys mcp-serve` — MCP stdio server with role-based tool filtering
-- MCP tools: @crysknife/status, @crysknife/done, @crysknife/sling, @crysknife/feedback
 - Workflow tier templates (full/standard/quick)
 - Merger standing orders template (generated on init)
 - Area boundary enforcement hook script (enforce-area.sh)
+- Command guard hook script (enforce-commands.sh)
 
 ### Phase 3: Monitoring
 
@@ -1479,10 +1539,10 @@ No external dependencies beyond cobra. tmux interaction is all through `os/exec`
 ### Phase 4: Planning and Tracking
 
 - `crys convoy` — feature-level grouping and status tracking
-- MCP tools: @crysknife/queue, @crysknife/merge-queue, @crysknife/merge-done, @crysknife/nudge
 - Plan file support — readiness-based task grouping (ready/blocked/discovered)
 - `crys sling --next` — mayor assigns next ready task to an idle worker
 - Dashboard improvements in `crys watch` output (merge queue, worker feedback, blocked tasks)
+- (Optional) MCP server if role enforcement via prompts proves insufficient
 
 ---
 
@@ -1493,7 +1553,7 @@ Gas Town                Crysknife Equivalent
 ────────────────────    ────────────────────────────────
 gt (CLI binary)         crys (CLI binary)
 Beads (Dolt database)   .crysknife/state.json
-gt sling                crys sling + @crysknife/sling MCP tool
+gt sling                crys sling (CLI command, agents call via execute_bash)
 Molecules               .kiro/specs/tasks/<agent>.md
 Protomolecules          .crysknife/templates/<tier>.md
 Hooks                   kiro-cli agent configs + agentSpawn hooks
