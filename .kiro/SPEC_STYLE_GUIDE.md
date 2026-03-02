@@ -380,3 +380,15 @@ Traceability chain:
   AC 1.2 ──▶ Property 3 ──▶ Task 4.1 (PBT for Property 3)
   AC 1.2 ──▶ Task 2.1 (_Requirements: 1.2_)
 ```
+
+---
+
+## 5. Post-Task Workflow
+
+After completing each task group during implementation:
+
+1. **Check the boxes** — mark all completed subtasks with `[x]` in `tasks.md`.
+2. **Summarize** — write a brief summary of what was done and any decisions made during implementation.
+3. **Commit** — commit with the message format: `task {number}: {short description}` (e.g. `task 1: project scaffold and CLI skeleton`).
+
+This keeps the tasks file as a living record of progress and ensures every task group results in a clean, atomic commit.

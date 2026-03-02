@@ -16,19 +16,19 @@ Build the `crys` CLI tool in Go using Cobra. Implementation follows four phases:
 
 ### Phase 1: Foundation
 
-- [ ] 1. Project Scaffold and CLI Skeleton
-  - [ ] 1.1 Initialize Go module and install Cobra
+- [x] 1. Project Scaffold and CLI Skeleton
+  - [x] 1.1 Initialize Go module and install Cobra
     - `go mod init github.com/0xlemi/crysknife`
     - `go get github.com/spf13/cobra`
     - Create `main.go` with root command (binary name: `crys`)
     - _Requirements: none (scaffold)_
 
-  - [ ] 1.2 Create empty command files with Cobra registration
+  - [x] 1.2 Create empty command files with Cobra registration
     - New files: `cmd/root.go`, `cmd/init.go`, `cmd/start.go`, `cmd/stop.go`, `cmd/status.go`, `cmd/heartbeat.go`, `cmd/mytask.go`, `cmd/sling.go`, `cmd/queue.go`, `cmd/done.go`, `cmd/mergequeue.go`, `cmd/mergedone.go`, `cmd/watch.go`, `cmd/nudge.go`, `cmd/convoy.go`
     - Each registers with root command, has placeholder RunE
     - _Requirements: none (scaffold)_
 
-  - [ ] 1.3 Embed default templates and hook scripts
+  - [x] 1.3 Embed default templates and hook scripts
     - New dir: `templates/` with embedded files: mayor.md, worker-prompt.md, merger-prompt.md, full.md, standard.md, quick.md, principles.md
     - New dir: `hooks/` with embedded files: enforce-area.sh, enforce-commands.sh
     - Use `//go:embed` directive in a `embed.go` file
@@ -461,3 +461,11 @@ Build the `crys` CLI tool in Go using Cobra. Implementation follows four phases:
 - Phase 4 is intentionally light — convoy is the only new command. `crys sling --next` (from design doc Phase 4) is deferred until the mayor workflow proves it's needed.
 - The embedded templates in `templates/` and `hooks/` are the source of truth. `.crysknife/templates/` and `.crysknife/hooks/` are copies that users can customize after init.
 - Worker agent configs are regenerated on every `crys sling` call, so customizations to `.kiro/agents/worker-N.json` will be overwritten. This is by design — the config is derived from state.
+
+## Post-Task Workflow
+
+After completing each task group:
+
+1. **Check the boxes** — mark all completed subtasks with `[x]` in this file.
+2. **Summarize** — write a brief summary of what was done and any decisions made.
+3. **Commit** — propose a commit with the message format: `task {number}: {short description}` (e.g. `task 1: project scaffold and CLI skeleton`).
