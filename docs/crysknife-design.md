@@ -1091,6 +1091,30 @@ $ crys convoy list
 $ crys convoy status "User Auth"
 ```
 
+### `crys merge-queue`
+
+Show branches waiting to be merged. Called by the merger's `agentSpawn` hook on startup, or manually.
+
+```
+$ crys merge-queue
+$ crys merge-queue --json    # machine-readable output for hooks
+```
+
+### `crys merge-done <branch>`
+
+Mark a merge as complete. Called by the merger after merging a branch.
+
+```
+$ crys merge-done feat/auth-backend
+$ crys merge-done feat/auth-backend --failed "tests failed: missing import in auth.go"
+```
+
+Steps:
+1. Updates state.json (removes branch from merge queue)
+2. If successful: updates the worker's status to "merged"
+3. If failed: flags the issue for the mayor
+4. Nudges the mayor either way
+
 ### `crys heartbeat <agent>`
 
 Update an agent's last_activity timestamp in state.json. Called by the `stop` hook after each agent response — not intended for manual use.
@@ -1464,7 +1488,8 @@ crysknife/
 │   ├── convoy.go           # crys convoy
 │   ├── heartbeat.go        # crys heartbeat (called by stop hooks)
 │   ├── mytask.go           # crys my-task (called by agentSpawn hooks)
-│   └── mergequeue.go       # crys merge-queue
+│   ├── mergequeue.go       # crys merge-queue
+│   └── mergedone.go        # crys merge-done
 ├── internal/
 │   ├── state/
 │   │   └── state.go        # state.json read/write
@@ -1523,6 +1548,8 @@ No external dependencies beyond cobra. tmux interaction is all through `os/exec`
 
 - `crys sling` — template rendering, task file generation, regenerate worker agent config with new task/area, nudge worker
 - `crys queue` — add/remove/list tasks in state.json
+- `crys merge-queue` — show branches waiting to be merged
+- `crys merge-done` — mark merge complete or failed, notify mayor
 - Workflow tier templates (full/standard/quick)
 - Merger standing orders template (generated on init)
 - Area boundary enforcement hook script (enforce-area.sh)
