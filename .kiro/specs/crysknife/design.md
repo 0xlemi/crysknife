@@ -24,12 +24,15 @@ The binary uses Cobra for CLI routing. Templates and hook scripts are embedded i
 
 8. **Two preToolUse guards** -- `enforce-area.sh` blocks file writes outside the worker's area. `enforce-commands.sh` blocks dangerous bash commands. Both use exit code 2 to block and return error messages via stderr.
 
+9. **`crys stop` does not stop `crys watch`** -- stop only kills agent panes (mayor, workers, merger), not the dashboard window where watch runs. The watch loop will see all agents as "stopped" and idle harmlessly. You Ctrl+C it manually. This matches the "no daemon" design — watch is a foreground process you control.
+
 ## Architecture
 
 ```
 crys (binary)
   |
   |-- cmd/
+  |   |-- root.go         root command, binary name "crys"
   |   |-- init.go         creates directories, copies templates, writes base configs
   |   |-- start.go        generates worker configs, worktrees, tmux, launches agents
   |   |-- stop.go         kills panes, updates state
@@ -259,7 +262,7 @@ Valid agent statuses: `"idle"`, `"working"`, `"done"`, `"merged"`, `"merge-faile
 
 Note: after auto-restart by `crys watch`, the agent status is set to `"working"` (not a separate "restarted" status).
 
-Valid merge queue statuses: `"ready"`, `"merging"`.
+Valid merge queue statuses: `"ready"`.
 
 ### Workflow Tier Templates
 
@@ -297,7 +300,7 @@ See `AgentConfig` struct. Three base configs:
 
 *For any* `crys start --workers N`, the State_File SHALL contain exactly N+2 agents (N workers + 1 mayor + 1 merger) after startup completes.
 
-**Validates: Requirements 2.6, 2.7**
+**Validates: Requirements 2.6, 2.7, 2.8**
 
 ### Property 4: Heartbeat timestamp freshness
 

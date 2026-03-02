@@ -51,9 +51,12 @@ Crysknife manages three agent roles: a mayor (plans and dispatches), workers (co
 4. WHEN `crys start` is run, THE system SHALL create a tmux session with windows for: mayor, dashboard, worker pairs (2 workers per window as panes), merger, lazygit, nvim, and terminal.
 5. WHEN `crys start` is run, THE system SHALL launch each agent with `kiro-cli chat --agent <name>` in its respective tmux pane, inside its Git worktree.
 6. WHEN `crys start` is run, THE system SHALL update State_File with all agent entries (id, role, status, tmux_pane, task_file).
-7. WHEN `crys start --workers N` is provided, THE system SHALL create exactly N workers (plus 1 mayor and 1 merger).
-8. IF a tmux session with the project name already exists, THEN `crys start` SHALL exit with an error message.
-9. WHEN `crys start --agent <agent-id>` is provided, THE system SHALL start only that specific agent.
+7. WHEN `crys start --workers N` is provided, THE system SHALL create exactly N workers (plus 1 mayor and 1 merger). IF `--workers` is omitted, THE system SHALL default to 4 workers.
+8. WHEN `crys start` creates agents in State_File, THE system SHALL set initial statuses to: "idle" for workers, "working" for the mayor, and "waiting" for the merger.
+9. IF a tmux session with the project name already exists, THEN `crys start` SHALL exit with an error message.
+10. IF `.crysknife/` does not exist in the current directory, THEN `crys start` SHALL exit with an error message.
+11. IF `tmux` or `kiro-cli` are not found in PATH, THEN `crys start` SHALL exit with an error message identifying the missing dependency.
+12. WHEN `crys start --agent <agent-id>` is provided, THE system SHALL start only that specific agent.
 
 ### Requirement 3: Agent Shutdown
 
@@ -61,7 +64,7 @@ Crysknife manages three agent roles: a mayor (plans and dispatches), workers (co
 
 #### Acceptance Criteria
 
-1. WHEN `crys stop` is run, THE system SHALL kill all agent tmux panes.
+1. WHEN `crys stop` is run, THE system SHALL kill all agent tmux panes (mayor, workers, merger) but SHALL NOT kill the tmux session or non-agent windows (dashboard, lazygit, nvim, terminal).
 2. WHEN `crys stop` is run, THE system SHALL update State_File setting all agent statuses to "stopped".
 3. WHEN `crys stop <agent-id>` is run with a specific agent, THE system SHALL kill only that agent's tmux pane and update only that agent's status.
 4. WHEN `crys stop` is run, THE system SHALL NOT remove Git worktrees (they persist for inspection).
@@ -91,6 +94,7 @@ Crysknife manages three agent roles: a mayor (plans and dispatches), workers (co
 6. WHEN `crys sling` is run, THE system SHALL nudge the worker via tmux send-keys to pick up the new task.
 7. WHEN `crys sling <worker-id> --from-queue` is provided, THE system SHALL pick the next task from the work queue and remove it from the queue.
 8. IF the specified worker does not exist in State_File, THEN `crys sling` SHALL exit with an error.
+9. IF the specified tier is not one of "full", "standard", or "quick", THEN `crys sling` SHALL exit with an error.
 
 ### Requirement 6: Work Queue Management
 
@@ -200,7 +204,7 @@ Crysknife manages three agent roles: a mayor (plans and dispatches), workers (co
 
 1. WHEN any `crys` command writes to State_File, THE system SHALL use atomic file writes (write to temp file, then rename) to prevent partial writes.
 2. WHEN any `crys` command reads State_File, THE system SHALL handle the case where the file does not exist by returning an empty default state.
-3. THE State_File SHALL conform to a consistent JSON schema with fields: project, created, agents (array), queue (array), convoys (array), merge_queue (array).
+3. THE State_File SHALL conform to a consistent JSON schema with fields: project (string), created (string), agents (array), queue (array), convoys (array), merge_queue (array).
 
 ### Requirement 16: Agent Config Generation
 
